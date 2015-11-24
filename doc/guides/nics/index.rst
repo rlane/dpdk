@@ -47,6 +47,7 @@ Network Interface Controller Drivers
     nfp
     szedata2
     virtio
+    vhost
     vmxnet3
     pcap_ring
 
