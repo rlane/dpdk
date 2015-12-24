@@ -243,7 +243,7 @@ new_device(struct virtio_net *dev)
 	}
 
 	dev->flags |= VIRTIO_DEV_RUNNING;
-	dev->pmd_priv = eth_dev;
+	dev->priv = eth_dev;
 	eth_dev->data->dev_link.link_status = 1;
 
 	for (i = 0; i < internal->nb_rx_queues; i++) {
@@ -276,7 +276,7 @@ destroy_device(volatile struct virtio_net *dev)
 		return;
 	}
 
-	eth_dev = (struct rte_eth_dev *)dev->pmd_priv;
+	eth_dev = (struct rte_eth_dev *)dev->priv;
 	if (eth_dev == NULL) {
 		RTE_LOG(INFO, PMD, "Failed to find a ethdev\n");
 		return;
@@ -304,7 +304,7 @@ destroy_device(volatile struct virtio_net *dev)
 
 	eth_dev->data->dev_link.link_status = 0;
 
-	dev->pmd_priv = NULL;
+	dev->priv = NULL;
 	dev->flags &= ~VIRTIO_DEV_RUNNING;
 
 	for (i = 0; i < internal->nb_rx_queues; i++) {
@@ -331,7 +331,7 @@ vhost_driver_session(void *param __rte_unused)
 	/* set vhost arguments */
 	vhost_ops.new_device = new_device;
 	vhost_ops.destroy_device = destroy_device;
-	if (rte_vhost_driver_pmd_callback_register(&vhost_ops) < 0)
+	if (rte_vhost_driver_callback_register(&vhost_ops) < 0)
 		rte_panic("Can't register callbacks\n");
 
 	/* start event handling */
