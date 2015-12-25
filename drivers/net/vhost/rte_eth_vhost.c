@@ -32,6 +32,7 @@
  */
 #include <unistd.h>
 #include <pthread.h>
+#include <stdbool.h>
 
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
@@ -40,6 +41,8 @@
 #include <rte_dev.h>
 #include <rte_kvargs.h>
 #include <rte_virtio_net.h>
+#include <rte_spinlock.h>
+#include <rte_eth_vhost.h>
 
 #define ETH_VHOST_IFACE_ARG		"iface"
 #define ETH_VHOST_QUEUES_ARG		"queues"
@@ -83,6 +86,7 @@ struct pmd_internal {
 	char *iface_name;
 	unsigned nb_rx_queues;
 	unsigned nb_tx_queues;
+	uint8_t port_id;
 
 	struct vhost_queue *rx_vhost_queues[RTE_MAX_QUEUES_PER_PORT];
 	struct vhost_queue *tx_vhost_queues[RTE_MAX_QUEUES_PER_PORT];
@@ -104,6 +108,16 @@ static struct rte_eth_link pmd_link = {
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
 		.link_status = 0
 };
+
+struct rte_vhost_vring_state {
+	bool cur[RTE_MAX_QUEUES_PER_PORT*2];
+	bool seen[RTE_MAX_QUEUES_PER_PORT*2];
+	unsigned int index;
+	unsigned int max_vring;
+	rte_spinlock_t lock;
+};
+
+static struct rte_vhost_vring_state *vring_states[256];
 
 static uint16_t
 eth_vhost_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
@@ -323,6 +337,58 @@ destroy_device(volatile struct virtio_net *dev)
 	RTE_LOG(INFO, PMD, "Connection closed\n");
 }
 
+static int
+vring_state_changed(struct virtio_net *dev,
+                    uint16_t vring, int enable)
+{
+	struct pmd_internal *internal = find_internal_resource(dev->ifname);
+	if (internal == NULL) {
+		RTE_LOG(INFO, PMD, "Invalid device name\n");
+		return -1;
+	}
+
+	uint8_t port_id = internal->port_id;
+
+	struct rte_vhost_vring_state *state = vring_states[port_id];
+	if (!state) {
+		return -1;
+	}
+
+	rte_spinlock_lock(&state->lock);
+	state->cur[vring] = enable;
+	state->max_vring = RTE_MAX(vring, state->max_vring);
+	rte_spinlock_unlock(&state->lock);
+
+	return 0;
+}
+
+int
+rte_eth_vhost_get_queue_event(uint8_t port_id,
+                              struct rte_eth_vhost_queue_event *event)
+{
+	unsigned int i;
+	struct rte_vhost_vring_state *state = vring_states[port_id];
+	if (!state) {
+		return -1;
+	}
+
+	rte_spinlock_lock(&state->lock);
+	for (i = 0; i <= state->max_vring; i++) {
+		int idx = state->index++ % (state->max_vring + 1);
+
+		if (state->cur[idx] != state->seen[idx]) {
+			state->seen[idx] = state->cur[idx];
+			event->queue_id = idx/2;
+			event->rx = idx & 1;
+			event->enable = state->cur[idx];
+			rte_spinlock_unlock(&state->lock);
+			return 0;
+		}
+	}
+	rte_spinlock_unlock(&state->lock);
+	return -1;
+}
+
 static void *
 vhost_driver_session(void *param __rte_unused)
 {
@@ -331,6 +397,7 @@ vhost_driver_session(void *param __rte_unused)
 	/* set vhost arguments */
 	vhost_ops.new_device = new_device;
 	vhost_ops.destroy_device = destroy_device;
+	vhost_ops.vring_state_changed = vring_state_changed;
 	if (rte_vhost_driver_callback_register(&vhost_ops) < 0)
 		rte_panic("Can't register callbacks\n");
 
@@ -599,6 +666,13 @@ eth_dev_vhost_create(const char *name, int index,
 		free(internal->dev_name);
 		goto error;
 	}
+	internal->port_id = eth_dev->data->port_id;
+
+	struct rte_vhost_vring_state *vring_state = rte_zmalloc_socket(name, sizeof(*vring_state), 0, numa_node);
+	if (vring_state == NULL)
+		goto error;
+	rte_spinlock_init(&vring_state->lock);
+	vring_states[eth_dev->data->port_id] = vring_state;
 
 	pthread_mutex_lock(&internal_list_lock);
 	TAILQ_INSERT_TAIL(&internals_list, internal, next);
@@ -735,6 +809,9 @@ rte_pmd_vhost_devuninit(const char *name)
 		return -ENODEV;
 
 	internal = eth_dev->data->dev_private;
+
+	rte_free(vring_states[internal->port_id]);
+	vring_states[internal->port_id] = NULL;
 
 	pthread_mutex_lock(&internal_list_lock);
 	TAILQ_REMOVE(&internals_list, internal, next);

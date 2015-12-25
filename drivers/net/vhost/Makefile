@@ -48,6 +48,11 @@ LIBABIVER := 1
 #
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += rte_eth_vhost.c
 
+#
+# Export include files
+#
+SYMLINK-y-include += rte_eth_vhost.h
+
 # this lib depends upon:
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_mbuf
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_ether
