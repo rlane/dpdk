@@ -274,6 +274,7 @@ new_device(struct virtio_net *dev)
 	}
 	RTE_LOG(INFO, PMD, "New connection established\n");
 
+	_rte_eth_dev_callback_process(eth_dev, RTE_ETH_EVENT_INTR_LSC);
 	return 0;
 }
 
@@ -335,6 +336,7 @@ destroy_device(volatile struct virtio_net *dev)
 	}
 
 	RTE_LOG(INFO, PMD, "Connection closed\n");
+	_rte_eth_dev_callback_process(eth_dev, RTE_ETH_EVENT_INTR_LSC);
 }
 
 static int
@@ -359,6 +361,7 @@ vring_state_changed(struct virtio_net *dev,
 	state->max_vring = RTE_MAX(vring, state->max_vring);
 	rte_spinlock_unlock(&state->lock);
 
+	_rte_eth_dev_callback_process(&rte_eth_devices[port_id], RTE_ETH_EVENT_QUEUE_STATE_CHANGE);
 	return 0;
 }
 
@@ -649,6 +652,8 @@ eth_dev_vhost_create(const char *name, int index,
 	eth_dev = rte_eth_dev_allocate(name, RTE_ETH_DEV_VIRTUAL);
 	if (eth_dev == NULL)
 		goto error;
+
+	TAILQ_INIT(&(eth_dev->link_intr_cbs));
 
 	/* now put it all together
 	 * - store queue data in internal,
